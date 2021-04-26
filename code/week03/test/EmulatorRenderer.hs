@@ -8,32 +8,34 @@
 
 module EmulatorRenderer where
 
-import qualified Control.Foldl as L
-import Control.Monad.Freer (run)
-import Control.Monad.Freer.Extras.Log (LogLevel (..))
-import qualified Data.ByteString.Lazy as BSL
-import qualified Data.ByteString.Lazy.Char8 as BSL
-import Data.Default (Default (..))
-import qualified Data.Text.Encoding as T
-import Data.Text.Prettyprint.Doc (Pretty (..), defaultLayoutOptions, layoutPretty, vsep)
-import Data.Text.Prettyprint.Doc.Render.Text (renderStrict)
-import Plutus.Trace.Emulator
-import qualified Plutus.Trace.Emulator as Trace
-import PlutusTx.Prelude hiding (Applicative (..), Semigroup (..), return, trace, (<$>), (>>), (>>=))
-import qualified Streaming.Prelude as S
-import System.IO
-import qualified Wallet.Emulator.Folds as Folds
-import Wallet.Emulator.Stream (filterLogLevel, foldEmulatorStreamM)
+import qualified Data.Aeson as A
+import Data.Default (Default (def))
+import Data.Text.Prettyprint.Doc (Pretty (..), defaultLayoutOptions, layoutPretty)
+import Data.Text.Prettyprint.Doc.Render.String (renderString)
+import Plutus.Trace.Emulator (EmulatorTrace, runEmulatorTraceIO', showEvent)
+import Plutus.Trace.Emulator.Types
+  ( ContractInstanceLog (ContractInstanceLog),
+    ContractInstanceMsg (ContractLog, CurrentRequests, HandledRequest, NoRequestsHandled, StoppedWithError),
+    UserThreadMsg (UserLog),
+  )
+import PlutusTx.Prelude (IO, Maybe (..), Semigroup ((<>)), Show (show), String, ($), (.))
+import Wallet.Emulator.MultiAgent (EmulatorEvent' (..))
 
+-- Print out the log.
 printEmulatorLog :: EmulatorTrace () -> IO ()
-printEmulatorLog = BSL.hPutStrLn stdout . renderEmulatorLog
+printEmulatorLog = runEmulatorTraceIO' def {showEvent = testShowEvent} def
 
--- Copied from Spec.Crowdfunding in plutus-use-cases
-renderEmulatorLog :: EmulatorTrace () -> BSL.ByteString
-renderEmulatorLog trace =
-  let result =
-        run $
-          foldEmulatorStreamM (L.generalize Folds.emulatorLog) $
-            filterLogLevel Info $
-              Trace.runEmulatorStream def trace
-   in BSL.fromStrict $ T.encodeUtf8 $ renderStrict $ layoutPretty defaultLayoutOptions $ vsep $ fmap pretty $ S.fst' result
+-- Customization of default EmulatorEvent' show function `Plutus.Trace.Emulator.defaultShowEvent`.
+-- Allows to get more insight if required.
+testShowEvent :: EmulatorEvent' -> Maybe String
+testShowEvent = \case
+  UserThreadEvent (UserLog msg) -> Just $ "*** USER LOG: " <> msg
+  InstanceEvent (ContractInstanceLog (ContractLog (A.String msg)) _ _) -> Just $ "*** CONTRACT LOG: " <> show msg
+  InstanceEvent (ContractInstanceLog (StoppedWithError err) _ _) -> Just $ "*** CONTRACT STOPPED WITH ERROR: " <> show err
+  InstanceEvent (ContractInstanceLog NoRequestsHandled _ _) -> Nothing
+  InstanceEvent (ContractInstanceLog (HandledRequest _) _ _) -> Nothing
+  InstanceEvent (ContractInstanceLog (CurrentRequests _) _ _) -> Nothing
+  SchedulerEvent _ -> Nothing
+  ChainIndexEvent _ _ -> Nothing
+  WalletEvent _ _ -> Nothing
+  ev -> Just . renderString . layoutPretty defaultLayoutOptions . pretty $ ev
